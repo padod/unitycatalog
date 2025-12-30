@@ -90,9 +90,24 @@ public class CredPropsUtil {
 
     S3PropsBuilder() {
       // Common properties for S3.
-      set("fs.s3a.path.style.access", "true");
       set("fs.s3.impl.disable.cache", "true");
       set("fs.s3a.impl.disable.cache", "true");
+    }
+
+    /**
+     * Configure endpoint and path style access from AwsCredentials.
+     * If endpoint is set, it's a third-party S3 provider.
+     * Path style access defaults to true for backward compatibility.
+     */
+    S3PropsBuilder withS3Config(AwsCredentials awsCred) {
+      if (awsCred.getEndpoint() != null && !awsCred.getEndpoint().isEmpty()) {
+        set("fs.s3a.endpoint", awsCred.getEndpoint());
+      }
+      // Set path style access from credentials, default to true for backward compatibility
+      boolean pathStyle = awsCred.getPathStyleAccess() != null
+          ? awsCred.getPathStyleAccess() : true;
+      set("fs.s3a.path.style.access", String.valueOf(pathStyle));
+      return this;
     }
 
     @Override
@@ -132,11 +147,15 @@ public class CredPropsUtil {
 
   private static Map<String, String> s3FixedCredProps(TemporaryCredentials tempCreds) {
     AwsCredentials awsCred = tempCreds.getAwsTempCredentials();
-    return new S3PropsBuilder()
+    S3PropsBuilder builder = new S3PropsBuilder()
+        .withS3Config(awsCred)
         .set("fs.s3a.access.key", awsCred.getAccessKeyId())
-        .set("fs.s3a.secret.key", awsCred.getSecretAccessKey())
-        .set("fs.s3a.session.token", awsCred.getSessionToken())
-        .build();
+        .set("fs.s3a.secret.key", awsCred.getSecretAccessKey());
+    // Session token may be null for third-party S3 providers
+    if (awsCred.getSessionToken() != null) {
+      builder.set("fs.s3a.session.token", awsCred.getSessionToken());
+    }
+    return builder.build();
   }
 
   private static S3PropsBuilder s3TempCredPropsBuilder(
@@ -145,13 +164,18 @@ public class CredPropsUtil {
       TemporaryCredentials tempCreds) {
     AwsCredentials awsCred = tempCreds.getAwsTempCredentials();
     S3PropsBuilder builder = new S3PropsBuilder()
+        .withS3Config(awsCred)
         .set(UCHadoopConf.S3A_CREDENTIALS_PROVIDER, AwsVendedTokenProvider.class.getName())
         .uri(uri)
         .tokenProvider(tokenProvider)
         .uid(UUID.randomUUID().toString())
         .set(UCHadoopConf.S3A_INIT_ACCESS_KEY, awsCred.getAccessKeyId())
-        .set(UCHadoopConf.S3A_INIT_SECRET_KEY, awsCred.getSecretAccessKey())
-        .set(UCHadoopConf.S3A_INIT_SESSION_TOKEN, awsCred.getSessionToken());
+        .set(UCHadoopConf.S3A_INIT_SECRET_KEY, awsCred.getSecretAccessKey());
+
+    // Session token may be null for third-party S3 providers
+    if (awsCred.getSessionToken() != null) {
+      builder.set(UCHadoopConf.S3A_INIT_SESSION_TOKEN, awsCred.getSessionToken());
+    }
 
     // For the static credential case, nullable expiration time is possible.
     if (tempCreds.getExpirationTime() != null) {
@@ -312,6 +336,7 @@ public class CredPropsUtil {
       TemporaryCredentials tempCreds) {
     switch (scheme) {
       case "s3":
+      case "s3a":
         if (renewCredEnabled) {
           return s3TableTempCredProps(uri, tokenProvider, tableId, tableOp, tempCreds);
         } else {
@@ -345,6 +370,7 @@ public class CredPropsUtil {
       TemporaryCredentials tempCreds) {
     switch (scheme) {
       case "s3":
+      case "s3a":
         if (renewCredEnabled) {
           return s3PathTempCredProps(uri, tokenProvider, path, pathOp, tempCreds);
         } else {

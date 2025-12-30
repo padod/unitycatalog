@@ -295,10 +295,23 @@ public class ServerProperties {
       String secretKey = getProperty("s3.secretKey." + i);
       String sessionToken = getProperty("s3.sessionToken." + i);
       String credentialsGenerator = getProperty("s3.credentialsGenerator." + i);
-      if ((bucketPath == null || region == null || awsRoleArn == null)
-          && (accessKey == null || secretKey == null || sessionToken == null)) {
+      String endpoint = getProperty("s3.endpoint." + i);
+      String pathStyleAccessStr = getProperty("s3.pathStyleAccess." + i);
+      Boolean pathStyleAccess =
+          pathStyleAccessStr != null ? Boolean.parseBoolean(pathStyleAccessStr) : null;
+
+      // Valid configurations:
+      // 1. AWS STS mode: bucketPath + region + awsRoleArn
+      // 2. AWS static mode: accessKey + secretKey + sessionToken
+      // 3. Third-party S3 mode: endpoint + accessKey + secretKey (no sessionToken required)
+      boolean awsStsMode = bucketPath != null && region != null && awsRoleArn != null;
+      boolean awsStaticMode = accessKey != null && secretKey != null && sessionToken != null;
+      boolean thirdPartyMode = endpoint != null && accessKey != null && secretKey != null;
+
+      if (!awsStsMode && !awsStaticMode && !thirdPartyMode) {
         break;
       }
+
       S3StorageConfig s3StorageConfig =
           S3StorageConfig.builder()
               .bucketPath(bucketPath)
@@ -308,6 +321,8 @@ public class ServerProperties {
               .secretKey(secretKey)
               .sessionToken(sessionToken)
               .credentialsGenerator(credentialsGenerator)
+              .endpoint(endpoint)
+              .pathStyleAccess(pathStyleAccess)
               .build();
       s3BucketConfigMap.put(bucketPath, s3StorageConfig);
       i++;

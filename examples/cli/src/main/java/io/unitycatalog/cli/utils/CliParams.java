@@ -62,7 +62,20 @@ public enum CliParams {
   FILTER("filter", "Query by which the results have to be filtered", "filter"),
   START_INDEX(
       "start_index", "Specifies the index (starting at 1) of the first result.", "startIndex"),
-  COUNT("count", "Desired number of results per page", "count");
+  COUNT("count", "Desired number of results per page", "count"),
+  // S3 credential parameters for third-party S3 providers
+  S3_ENDPOINT(
+      "s3_endpoint",
+      "Custom S3 endpoint URL for S3-compatible providers (e.g., http://minio:9000)",
+      "s3_endpoint_url"),
+  S3_ACCESS_KEY(
+      "s3_access_key", "S3 access key ID for static credentials", "s3_access_key_id"),
+  S3_SECRET_KEY(
+      "s3_secret_key", "S3 secret access key for static credentials", "s3_secret_access_key"),
+  S3_PATH_STYLE(
+      "s3_path_style",
+      "Use path-style access for S3 requests (true/false)",
+      "s3_path_style_access");
   private final String value;
   private final String helpMessage;
   private final String serverParam;

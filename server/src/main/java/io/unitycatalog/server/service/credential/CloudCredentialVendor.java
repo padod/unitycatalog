@@ -4,6 +4,7 @@ import static io.unitycatalog.server.utils.Constants.URI_SCHEME_ABFS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_ABFSS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_GS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_S3;
+import static io.unitycatalog.server.utils.Constants.URI_SCHEME_S3A;
 
 import io.unitycatalog.server.exception.BaseException;
 import io.unitycatalog.server.exception.ErrorCode;
@@ -69,12 +70,25 @@ public class CloudCredentialVendor {
                   .oauthToken(gcpToken.getTokenValue()))
               .expirationTime(gcpToken.getExpirationTime().getTime());
         }
-        case URI_SCHEME_S3 -> {
+        case URI_SCHEME_S3, URI_SCHEME_S3A -> {
           Credentials awsSessionCredentials = vendAwsCredential(context);
-          temporaryCredentials.awsTempCredentials(new AwsCredentials()
+          AwsCredentials awsCredentials = new AwsCredentials()
               .accessKeyId(awsSessionCredentials.accessKeyId())
               .secretAccessKey(awsSessionCredentials.secretAccessKey())
-              .sessionToken(awsSessionCredentials.sessionToken()));
+              .sessionToken(awsSessionCredentials.sessionToken());
+
+          // Add endpoint and pathStyleAccess for third-party S3 providers
+          var s3Config = awsCredentialVendor.getS3Config(context.getStorageBase());
+          if (s3Config != null) {
+            if (s3Config.getEndpoint() != null && !s3Config.getEndpoint().isEmpty()) {
+              awsCredentials.endpoint(s3Config.getEndpoint());
+            }
+            if (s3Config.getPathStyleAccess() != null) {
+              awsCredentials.pathStyleAccess(s3Config.getPathStyleAccess());
+            }
+          }
+
+          temporaryCredentials.awsTempCredentials(awsCredentials);
 
           // Explicitly set the expiration time for the temporary credentials if it's a non-static
           // credential. For static credential, the expiration time can be nullable.

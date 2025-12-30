@@ -31,6 +31,7 @@ import static io.unitycatalog.server.utils.Constants.URI_SCHEME_ABFS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_ABFSS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_GS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_S3;
+import static io.unitycatalog.server.utils.Constants.URI_SCHEME_S3A;
 
 public class FileIOFactory {
 
@@ -48,7 +49,7 @@ public class FileIOFactory {
     return switch (tableLocationUri.getScheme()) {
       case URI_SCHEME_ABFS, URI_SCHEME_ABFSS -> getADLSFileIO(tableLocationUri);
       case URI_SCHEME_GS -> getGCSFileIO(tableLocationUri);
-      case URI_SCHEME_S3 -> getS3FileIO(tableLocationUri);
+      case URI_SCHEME_S3, URI_SCHEME_S3A -> getS3FileIO(tableLocationUri);
       // TODO: should we default/fallback to HadoopFileIO ?
       default -> new SimpleLocalFileIO();
     };
@@ -89,20 +90,29 @@ public class FileIOFactory {
     S3StorageConfig s3StorageConfig = s3Configurations.get(context.getStorageBase());
 
     S3FileIO s3FileIO =
-        new S3FileIO(() -> getS3Client(getAwsCredentialsProvider(context),
-            s3StorageConfig.getRegion()));
+        new S3FileIO(() -> getS3Client(
+            getAwsCredentialsProvider(context),
+            s3StorageConfig.getRegion(),
+            s3StorageConfig.getEndpoint(),
+            s3StorageConfig.getPathStyleAccess()));
 
     s3FileIO.initialize(Map.of());
 
     return s3FileIO;
   }
 
-  protected S3Client getS3Client(AwsCredentialsProvider awsCredentialsProvider, String region) {
-    return S3Client.builder()
+  protected S3Client getS3Client(AwsCredentialsProvider awsCredentialsProvider, String region,
+      String endpoint, Boolean pathStyleAccess) {
+    var builder = S3Client.builder()
         .region(Region.of(region))
         .credentialsProvider(awsCredentialsProvider)
-        .forcePathStyle(false)
-        .build();
+        .forcePathStyle(pathStyleAccess != null && pathStyleAccess);
+
+    if (endpoint != null && !endpoint.isEmpty()) {
+      builder.endpointOverride(URI.create(endpoint));
+    }
+
+    return builder.build();
   }
 
   private AwsCredentialsProvider getAwsCredentialsProvider(CredentialContext context) {

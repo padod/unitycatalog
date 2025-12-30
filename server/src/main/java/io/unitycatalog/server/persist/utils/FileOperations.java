@@ -92,7 +92,7 @@ public class FileOperations {
   }
 
   private static URI createURI(String uri) {
-    if (uri.startsWith("s3://") || uri.startsWith("file:")) {
+    if (uri.startsWith("s3://") || uri.startsWith("s3a://") || uri.startsWith("file:")) {
       return URI.create(uri);
     } else {
       return Paths.get(uri).toUri();
@@ -108,7 +108,7 @@ public class FileOperations {
       } catch (RuntimeException | IOException e) {
         throw new BaseException(ErrorCode.INTERNAL, "Failed to delete directory: " + path, e);
       }
-    } else if (directoryUri.getScheme().equals("s3")) {
+    } else if (directoryUri.getScheme().equals("s3") || directoryUri.getScheme().equals("s3a")) {
       modifyS3Directory(directoryUri, false);
     } else {
       throw new BaseException(
@@ -135,6 +135,7 @@ public class FileOperations {
   }
 
   private URI modifyS3Directory(URI parsedUri, boolean createOrDelete) {
+    String scheme = parsedUri.getScheme();
     String bucketName = parsedUri.getHost();
     String path = parsedUri.getPath().substring(1); // Remove leading '/'
     String accessKey = serverProperties.get(Property.AWS_S3_ACCESS_KEY);
@@ -168,7 +169,7 @@ public class FileOperations {
         metadata.setContentLength(0);
         s3Client.putObject(new PutObjectRequest(bucketName, path, emptyContentStream, metadata));
         LOGGER.debug("Directory created successfully: {}", path);
-        return URI.create(String.format("s3://%s/%s", bucketName, path));
+        return URI.create(String.format("%s://%s/%s", scheme, bucketName, path));
       } catch (Exception e) {
         throw new BaseException(ErrorCode.INTERNAL, "Failed to create directory: " + path, e);
       }
@@ -185,7 +186,7 @@ public class FileOperations {
                 });
         req.setMarker(listing.getNextMarker());
       } while (listing.isTruncated());
-      return URI.create(String.format("s3://%s/%s", bucketName, path));
+      return URI.create(String.format("%s://%s/%s", scheme, bucketName, path));
     }
   }
 

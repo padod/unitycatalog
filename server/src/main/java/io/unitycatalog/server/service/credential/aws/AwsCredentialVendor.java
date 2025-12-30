@@ -34,6 +34,15 @@ public class AwsCredentialVendor {
           config.getAccessKey(), config.getSecretKey(), config.getSessionToken());
     }
 
+    // Third-party S3 mode: endpoint + accessKey + secretKey
+    if (config.getEndpoint() != null
+        && !config.getEndpoint().isEmpty()
+        && config.getAccessKey() != null
+        && !config.getAccessKey().isEmpty()) {
+      return new CredentialsGenerator.StaticCredentialsGenerator(
+          config.getAccessKey(), config.getSecretKey(), null);
+    }
+
     if (config.getAccessKey() != null && !config.getAccessKey().isEmpty()) {
       return new CredentialsGenerator.StsCredentialsGenerator(
           config.getRegion(), config.getAccessKey(), config.getSecretKey(), config.getAwsRoleArn());
@@ -41,6 +50,14 @@ public class AwsCredentialVendor {
       return new CredentialsGenerator.StsCredentialsGenerator(
           config.getRegion(), config.getAwsRoleArn());
     }
+  }
+
+  /**
+   * Returns the S3 storage configuration for the given storage base. Used by CloudCredentialVendor
+   * to include endpoint and pathStyleAccess in the response.
+   */
+  public S3StorageConfig getS3Config(String storageBase) {
+    return s3Configurations.get(storageBase);
   }
 
   public Credentials vendAwsCredentials(CredentialContext context) {

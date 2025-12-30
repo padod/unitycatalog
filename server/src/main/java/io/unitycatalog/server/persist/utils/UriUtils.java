@@ -4,6 +4,7 @@ import static io.unitycatalog.server.utils.Constants.URI_SCHEME_ABFS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_ABFSS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_GS;
 import static io.unitycatalog.server.utils.Constants.URI_SCHEME_S3;
+import static io.unitycatalog.server.utils.Constants.URI_SCHEME_S3A;
 
 import io.unitycatalog.server.exception.BaseException;
 import io.unitycatalog.server.exception.ErrorCode;
@@ -46,7 +47,8 @@ public class UriUtils {
     try {
       if (parsedUri.getScheme().equals("file")) {
         return updateLocalDirectory(parsedUri, op);
-      } else if (parsedUri.getScheme().equals(URI_SCHEME_S3)) {
+      } else if (parsedUri.getScheme().equals(URI_SCHEME_S3)
+          || parsedUri.getScheme().equals(URI_SCHEME_S3A)) {
         // For v0.2, we will NOT create the path in cloud storage since MLflow uses the native cloud
         // clients and not the hadoopfs libraries.  We will update this in v0.3 when UC OSS begins
         // using the hadoopfs libraries.
