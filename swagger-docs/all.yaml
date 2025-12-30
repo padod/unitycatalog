@@ -2348,6 +2348,12 @@ components:
           description: The token that users must pass to AWS API to use the temporary
             credentials.
           type: string
+        endpoint:
+          description: Custom S3 endpoint URL for S3-compatible providers (e.g., MinIO, Ceph).
+          type: string
+        path_style_access:
+          description: Whether to use path-style access for S3 requests. Required for some S3-compatible providers.
+          type: boolean
       type: object
     AzureUserDelegationSAS:
       properties:
