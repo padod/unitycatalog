@@ -111,9 +111,9 @@ lazy val commonSettings = Seq(
   assembly / test := {}
 )
 
-enablePlugins(CoursierPlugin)
-
-useCoursier := true
+// Coursier is built into sbt 1.3+, no need for explicit plugin
+// enablePlugins(CoursierPlugin)
+// useCoursier := true
 
 // Configure resolvers
 resolvers ++= Seq(
