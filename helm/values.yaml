@@ -7,12 +7,20 @@ storage:
   #
   modelStorageRoot: file:/tmp/ucroot
 
+  # -- (string) Root path for managed table storage
+  # @default -- not set
+  # @raw
+  #
+  # Example: `s3a://bucket/managed-tables`
+  #
+  tableStorageRoot:
+
   credentials:
     # -- (array) S3 credentials for accessing the storage
     # @default -- not set
     # @raw
     #
-    # Example:
+    # Example (AWS S3):
     # ```yaml
     # s3:
     # - bucketPath: s3://my-bucket-path
@@ -21,9 +29,24 @@ storage:
     #   credentialsSecretName: my-bucket-secret
     # ```
     #
+    # Example (Third-party S3 provider like MinIO):
+    # ```yaml
+    # s3:
+    # - bucketPath: s3://my-bucket-path
+    #   region: us-east-1
+    #   credentialsSecretName: my-bucket-secret
+    #   endpoint: http://minio:9000
+    #   pathStyleAccess: true
+    # ```
+    #
     # Credential secret must contain the following keys:
-    # - `accessKey`: AWS access key
-    # - `secretKey`: AWS secret key
+    # - `accessKey`: AWS access key (or MinIO access key)
+    # - `secretKey`: AWS secret key (or MinIO secret key)
+    #
+    # Optional fields:
+    # - `awsRoleArn`: AWS IAM role ARN for assuming a role (AWS only)
+    # - `endpoint`: Custom S3 endpoint URL for third-party providers (MinIO, etc.)
+    # - `pathStyleAccess`: Set to true for MinIO and other S3-compatible providers
     #
     s3:
 

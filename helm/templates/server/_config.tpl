@@ -15,13 +15,24 @@ server.cookie-timeout={{ .Values.auth.cookieTimeout }}
 {{- end }}
 
 storage-root.models={{ .Values.storage.modelStorageRoot }}
+{{- if .Values.storage.tableStorageRoot }}
+storage-root.tables={{ .Values.storage.tableStorageRoot }}
+{{- end }}
 
 {{- range $index, $config := .Values.storage.credentials.s3 }}
 s3.bucketPath.{{ $index }}={{ $config.bucketPath }}
 s3.region.{{ $index }}={{ $config.region }}
+{{- if $config.awsRoleArn }}
 s3.awsRoleArn.{{ $index }}={{ $config.awsRoleArn }}
+{{- end }}
 s3.accessKey.{{ $index }}=${S3_ACCESS_KEY_{{ $index }}}
 s3.secretKey.{{ $index }}=${S3_SECRET_KEY_{{ $index }}}
+{{- if $config.endpoint }}
+s3.endpoint.{{ $index }}={{ $config.endpoint }}
+{{- end }}
+{{- if $config.pathStyleAccess }}
+s3.pathStyleAccess.{{ $index }}={{ $config.pathStyleAccess }}
+{{- end }}
 {{- end }}
 
 {{- range $index, $config := .Values.storage.credentials.adls }}
