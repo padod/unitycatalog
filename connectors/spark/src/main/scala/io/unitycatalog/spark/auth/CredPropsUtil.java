@@ -102,6 +102,16 @@ public class CredPropsUtil {
     S3PropsBuilder withS3Config(AwsCredentials awsCred) {
       if (awsCred.getEndpoint() != null && !awsCred.getEndpoint().isEmpty()) {
         set("fs.s3a.endpoint", awsCred.getEndpoint());
+        // For third-party S3 providers (MinIO, etc.), configure to skip STS calls
+        // Use SimpleAWSCredentialsProvider which reads credentials directly from config
+        set("fs.s3a.aws.credentials.provider",
+            "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider");
+        // Disable S3 guard and metadata store features that may require STS
+        set("fs.s3a.metadatastore.impl", "org.apache.hadoop.fs.s3a.s3guard.NullMetadataStore");
+        // Set a dummy region to avoid region detection which may fail for MinIO
+        set("fs.s3a.endpoint.region", "us-east-1");
+        // Disable bucket existence check which may fail with third-party S3
+        set("fs.s3a.bucket.probe", "0");
       }
       // Set path style access from credentials, default to true for backward compatibility
       boolean pathStyle = awsCred.getPathStyleAccess() != null

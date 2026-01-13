@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # MinIO - S3-Compatible Object Storage
+  # ============================================
+  minio:
+    image: minio/minio:latest
+    container_name: uc-minio
+    hostname: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uc-network
+
+  # ============================================
+  # MinIO Initialization - Create Buckets
+  # ============================================
+  minio-init:
+    image: minio/mc:latest
+    container_name: uc-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO to be ready...';
+      sleep 2;
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/unity-catalog-storage --ignore-existing;
+      mc mb myminio/unity-catalog-data --ignore-existing;
+      mc anonymous set public myminio/unity-catalog-storage;
+      echo 'MinIO initialization complete!';
+      exit 0;
+      "
+    networks:
+      - uc-network
+
+  # ============================================
+  # Unity Catalog Server - Built from Source
+  # ============================================
+  unity-catalog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: uc-server
+    hostname: unity-catalog
+    ports:
+      - "8080:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./etc/conf:/home/unitycatalog/etc/conf
+      - uc-data:/home/unitycatalog/etc/db
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/2.1/unity-catalog/catalogs"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    networks:
+      - uc-network
+
+  # ============================================
+  # Unity Catalog UI - Built from Source
+  # ============================================
+  unity-catalog-ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+      args:
+        - PROXY_HOST=unity-catalog
+    container_name: uc-ui
+    hostname: unity-catalog-ui
+    ports:
+      - "3000:3000"
+    environment:
+      - UC_API_URL=http://unity-catalog:8080
+      - REACT_APP_UC_API_URL=http://unity-catalog:8080
+    depends_on:
+      unity-catalog:
+        condition: service_healthy
+    networks:
+      - uc-network
+
+  # ============================================
+  # Apache Spark with Delta Lake & UC Support
+  # ============================================
+  spark:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile.spark
+    container_name: uc-spark
+    hostname: spark
+    ports:
+      - "4040:4040"
+      - "8888:8888"
+    environment:
+      # Note: S3 credentials are NOT passed here
+      # Unity Catalog server vends credentials to Spark
+      - SPARK_MODE=master
+      - UC_HOST=http://unity-catalog:8080
+    volumes:
+      - ./docker/spark/apps:/opt/spark/apps
+      - ./docker/spark/conf:/opt/spark/conf/custom
+      - spark-data:/opt/spark/work
+    depends_on:
+      unity-catalog:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - uc-network
+    command: ["tail", "-f", "/dev/null"]
+
+volumes:
+  minio-data:
+    name: uc-minio-data
+  uc-data:
+    name: uc-server-data
+  spark-data:
+    name: uc-spark-data
+
+networks:
+  uc-network:
+    name: uc-network
+    driver: bridge

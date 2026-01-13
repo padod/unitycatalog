@@ -1,0 +1,52 @@
+# Apache Spark 4.0.1 with Scala 2.13 support
+FROM apache/spark:4.0.1-scala2.13-java17-python3-ubuntu
+
+USER root
+
+# Install required packages
+RUN apt-get update && \
+    apt-get install -y curl wget && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download required JARs to Spark's jars directory
+WORKDIR /opt/spark/jars
+
+# Unity Catalog JARs - COPIED FROM LOCAL BUILD (not downloaded)
+COPY jars/unitycatalog-spark_2.13-*.jar ./
+COPY jars/unitycatalog-client-*.jar ./
+
+# Delta Lake (using 2.13 versions compatible with Spark 4.0)
+RUN curl -fSL -o delta-spark_2.13-4.0.0.jar \
+    "https://repo1.maven.org/maven2/io/delta/delta-spark_2.13/4.0.0/delta-spark_2.13-4.0.0.jar"
+
+RUN curl -fSL -o delta-storage-4.0.0.jar \
+    "https://repo1.maven.org/maven2/io/delta/delta-storage/4.0.0/delta-storage-4.0.0.jar"
+
+# Hadoop AWS Support (required for S3A filesystem)
+RUN curl -fSL -o hadoop-aws-3.4.0.jar \
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.4.0/hadoop-aws-3.4.0.jar"
+
+RUN curl -fSL -o aws-java-sdk-bundle-1.12.367.jar \
+    "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.367/aws-java-sdk-bundle-1.12.367.jar"
+
+# AWS SDK v2 (required by Hadoop 3.4.x for S3 operations - must match hadoop-aws version)
+RUN curl -fSL -o bundle-2.29.52.jar \
+    "https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.29.52/bundle-2.29.52.jar"
+
+# OpenAPI Jackson Databind Nullable (required by Unity Catalog client)
+RUN curl -fSL -o jackson-databind-nullable-0.2.6.jar \
+    "https://repo1.maven.org/maven2/org/openapitools/jackson-databind-nullable/0.2.6/jackson-databind-nullable-0.2.6.jar"
+
+# Byte Buddy (required by Unity Catalog client)
+RUN curl -fSL -o byte-buddy-1.14.18.jar \
+    "https://repo1.maven.org/maven2/net/bytebuddy/byte-buddy/1.14.18/byte-buddy-1.14.18.jar"
+
+WORKDIR /opt/spark
+
+# Copy custom configuration
+COPY conf/spark-defaults.conf /opt/spark/conf/spark-defaults.conf
+
+# Create apps directory
+RUN mkdir -p /opt/spark/apps
+
+CMD ["tail", "-f", "/dev/null"]

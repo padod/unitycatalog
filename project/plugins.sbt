@@ -20,8 +20,7 @@ addSbtPlugin("com.github.sbt" % "sbt-pgp" % "2.1.2")
 
 addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "2.2.0")
 
-// Commented out: sbt 1.3+ includes Coursier by default, this old version conflicts
-// addSbtPlugin("io.get-coursier" % "sbt-coursier" % "1.0.3")
+ addSbtPlugin("io.get-coursier" % "sbt-coursier" % "1.0.3")
 
 addSbtPlugin("org.xerial.sbt" % "sbt-sonatype" % "3.11.3")
 

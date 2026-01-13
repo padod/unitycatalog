@@ -6,7 +6,8 @@ import io.unitycatalog.client.auth.TokenProvider
 import io.unitycatalog.client.model.{ColumnInfo, ColumnTypeName, CreateSchema, CreateStagingTable, CreateTable, DataSourceFormat, GenerateTemporaryPathCredential, GenerateTemporaryTableCredential, ListTablesResponse, PathOperation, SchemaInfo, TableOperation, TableType}
 import io.unitycatalog.client.retry.JitterDelayRetryPolicy
 import io.unitycatalog.spark.auth.{AuthConfigUtils, CredPropsUtil}
-import io.unitycatalog.spark.utils.OptionsUtil
+import io.unitycatalog.spark.utils.{DeltaSchemaReader, DeltaTableMetadata, OptionsUtil}
+import org.apache.hadoop.conf.Configuration
 
 import java.net.URI
 import java.util
@@ -17,7 +18,7 @@ import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchT
 import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType, CatalogUtils}
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.Transform
-import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.sparkproject.guava.base.Preconditions
 
@@ -282,7 +283,7 @@ private class UCProxy(
     renewCredEnabled: Boolean,
     apiClient: ApiClient,
     tablesApi: TablesApi,
-    temporaryCredentialsApi: TemporaryCredentialsApi) extends TableCatalog with SupportsNamespaces {
+    temporaryCredentialsApi: TemporaryCredentialsApi) extends TableCatalog with SupportsNamespaces with Logging {
   private[this] var name: String = null
   private[this] var schemasApi: SchemasApi = null
 
@@ -308,7 +309,7 @@ private class UCProxy(
   }
 
   override def loadTable(ident: Identifier): Table = {
-    val t = try {
+    var t = try {
       tablesApi.getTable(
         UCSingleCatalog.fullTableNameForApi(this.name, ident),
         /* readStreamingTableAsManaged = */ true,
@@ -318,14 +319,6 @@ private class UCProxy(
         throw new NoSuchTableException(ident)
     }
     val identifier = TableIdentifier(t.getName, Some(t.getSchemaName), Some(t.getCatalogName))
-    val partitionCols = scala.collection.mutable.ArrayBuffer.empty[(String, Int)]
-    val fields = t.getColumns.asScala.map { col =>
-      Option(col.getPartitionIndex).foreach { index =>
-        partitionCols += col.getName -> index
-      }
-      StructField(col.getName, DataType.fromDDL(col.getTypeText), col.getNullable)
-        .withComment(col.getComment)
-    }.toArray
     val locationUri = CatalogUtils.stringToURI(t.getStorageLocation)
     val tableId = t.getTableId
     var tableOp = TableOperation.READ_WRITE
@@ -359,6 +352,48 @@ private class UCProxy(
       temporaryCredentials,
     )
 
+    // Sync metadata from Delta log if this is a Delta table
+    var deltaMetadataOpt: Option[DeltaTableMetadata] = None
+    val fields: Array[StructField] = if (t.getDataSourceFormat == DataSourceFormat.DELTA) {
+      deltaMetadataOpt = readMetadataFromDeltaLog(t, extraSerdeProps)
+      deltaMetadataOpt match {
+        case Some(deltaMetadata) =>
+          // Check if UC metadata needs to be synced
+          if (needsSync(t, deltaMetadata)) {
+            val ucColumns = Option(t.getColumns).map(_.asScala.toSeq).getOrElse(Seq.empty)
+            logInfo(s"Metadata drift detected for table ${t.getCatalogName}.${t.getSchemaName}.${t.getName}, " +
+              s"syncing from Delta log (UC: ${ucColumns.size} cols, Delta: ${deltaMetadata.schema.size} cols, " +
+              s"partitions: ${deltaMetadata.partitionColumns.mkString(",")})")
+            // Update UC with Delta metadata
+            t = updateTableMetadataInUC(t, deltaMetadata)
+          }
+          deltaMetadata.schema.fields
+        case None =>
+          // Fall back to UC schema if Delta log read fails
+          Option(t.getColumns).map(_.asScala.toSeq).getOrElse(Seq.empty).map { col =>
+            StructField(col.getName, DataType.fromDDL(col.getTypeText), col.getNullable)
+              .withComment(col.getComment)
+          }.toArray
+      }
+    } else {
+      // Non-Delta tables: use UC schema
+      Option(t.getColumns).map(_.asScala.toSeq).getOrElse(Seq.empty).map { col =>
+        StructField(col.getName, DataType.fromDDL(col.getTypeText), col.getNullable)
+          .withComment(col.getComment)
+      }.toArray
+    }
+
+    // Extract partition columns - prefer Delta log, fall back to UC
+    val partitionCols: Seq[String] = deltaMetadataOpt.map(_.partitionColumns).getOrElse {
+      val ucPartCols = scala.collection.mutable.ArrayBuffer.empty[(String, Int)]
+      Option(t.getColumns).foreach(_.asScala.foreach { col =>
+        Option(col.getPartitionIndex).foreach { index =>
+          ucPartCols += col.getName -> index
+        }
+      })
+      ucPartCols.sortBy(_._2).map(_._1).toSeq
+    }
+
     val sparkTable = CatalogTable(
       identifier,
       tableType = if (t.getTableType == TableType.MANAGED) {
@@ -374,7 +409,7 @@ private class UCProxy(
       provider = Some(t.getDataSourceFormat.getValue.toLowerCase()),
       createTime = t.getCreatedAt,
       tracksPartitionsInCatalog = false,
-      partitionColumnNames = partitionCols.sortBy(_._2).map(_._1).toSeq
+      partitionColumnNames = partitionCols
     )
     // Spark separates table lookup and data source resolution. To support Spark native data
     // sources, here we return the `V1Table` which only contains the table metadata. Spark will
@@ -462,6 +497,8 @@ private class UCProxy(
       case BinaryType => ColumnTypeName.BINARY
       case TimestampNTZType => ColumnTypeName.TIMESTAMP_NTZ
       case TimestampType => ColumnTypeName.TIMESTAMP
+      case DateType => ColumnTypeName.DATE
+      case _: DecimalType => ColumnTypeName.DECIMAL
       case _ => throw new ApiException("DataType not supported: " + dataType.simpleString)
     }
   }
@@ -528,5 +565,162 @@ private class UCProxy(
     UCSingleCatalog.checkUnsupportedNestedNamespace(namespace)
     schemasApi.deleteSchema(name + "." + namespace.head, cascade)
     true
+  }
+
+  /**
+   * Read full metadata from Delta log using vended credentials.
+   * Returns Some(DeltaTableMetadata) if successful, None if Delta log cannot be read.
+   */
+  private def readMetadataFromDeltaLog(
+      t: io.unitycatalog.client.model.TableInfo,
+      extraSerdeProps: java.util.Map[String, String]): Option[DeltaTableMetadata] = {
+    try {
+      val hadoopConf = new Configuration()
+
+      // Copy credential properties to Hadoop Configuration
+      extraSerdeProps.asScala.foreach { case (k, v) =>
+        // Map spark.hadoop.* properties to hadoop conf
+        if (k.startsWith("spark.hadoop.")) {
+          hadoopConf.set(k.stripPrefix("spark.hadoop."), v)
+        } else if (k.startsWith("fs.s3a.") || k.startsWith("fs.s3.")) {
+          hadoopConf.set(k, v)
+        }
+      }
+
+      // Read full metadata from Delta log
+      DeltaSchemaReader.readMetadata(t.getStorageLocation, hadoopConf)
+    } catch {
+      case e: Exception =>
+        logWarning(s"Failed to read Delta metadata for table " +
+          s"${t.getCatalogName}.${t.getSchemaName}.${t.getName}: ${e.getMessage}")
+        None
+    }
+  }
+
+  /**
+   * Check if UC table metadata needs to be synced with Delta log.
+   * Compares schema, partition columns, comment, and properties.
+   */
+  private def needsSync(
+      t: io.unitycatalog.client.model.TableInfo,
+      deltaMetadata: DeltaTableMetadata): Boolean = {
+    // Compare schema
+    val ucColumns = Option(t.getColumns).map(_.asScala.toSeq).getOrElse(Seq.empty)
+    val ucSchemaComparable = ucColumns.map(c =>
+      (c.getName, c.getTypeText, Option(c.getNullable).map(_.booleanValue()).getOrElse(true)))
+    val deltaSchemaComparable = deltaMetadata.schema.fields.map(f =>
+      (f.name, f.dataType.simpleString, f.nullable))
+
+    if (ucSchemaComparable != deltaSchemaComparable.toSeq) {
+      return true
+    }
+
+    // Compare partition columns
+    val ucPartitionCols = ucColumns
+      .filter(c => Option(c.getPartitionIndex).isDefined)
+      .sortBy(_.getPartitionIndex)
+      .map(_.getName)
+    if (ucPartitionCols != deltaMetadata.partitionColumns) {
+      return true
+    }
+
+    // Compare comment (only if Delta has one)
+    deltaMetadata.description.foreach { deltaComment =>
+      if (Option(t.getComment).getOrElse("") != deltaComment) {
+        return true
+      }
+    }
+
+    // Compare properties (only Delta properties, not UC-specific ones)
+    if (deltaMetadata.configuration.nonEmpty) {
+      val ucProps = Option(t.getProperties).map(_.asScala.toMap).getOrElse(Map.empty)
+      deltaMetadata.configuration.foreach { case (k, v) =>
+        if (ucProps.get(k) != Some(v)) {
+          return true
+        }
+      }
+    }
+
+    false
+  }
+
+  /**
+   * Update table metadata in Unity Catalog by deleting and recreating the table.
+   * Syncs schema, partition columns, comment, and properties from Delta log.
+   * Returns the updated TableInfo.
+   */
+  private def updateTableMetadataInUC(
+      t: io.unitycatalog.client.model.TableInfo,
+      deltaMetadata: DeltaTableMetadata): io.unitycatalog.client.model.TableInfo = {
+    try {
+      val fullTableName = s"${t.getCatalogName}.${t.getSchemaName}.${t.getName}"
+
+      // Delete existing table (metadata only, doesn't delete data)
+      tablesApi.deleteTable(fullTableName)
+
+      // Recreate with metadata from Delta log
+      val createTable = new CreateTable()
+      createTable.setName(t.getName)
+      createTable.setSchemaName(t.getSchemaName)
+      createTable.setCatalogName(t.getCatalogName)
+      createTable.setTableType(t.getTableType)
+      createTable.setStorageLocation(t.getStorageLocation)
+      createTable.setDataSourceFormat(t.getDataSourceFormat)
+
+      // Set comment from Delta log, fall back to UC comment
+      val tableComment = deltaMetadata.description.getOrElse(t.getComment)
+      if (tableComment != null) {
+        createTable.setComment(tableComment)
+      }
+
+      // Merge properties: Delta config takes precedence, but keep UC-specific props
+      val existingProps = Option(t.getProperties).map(_.asScala.toMap).getOrElse(Map.empty)
+      val mergedProps = existingProps ++ deltaMetadata.configuration
+      createTable.setProperties(mergedProps.asJava)
+
+      // Build partition column index map
+      val partitionColIndex = deltaMetadata.partitionColumns.zipWithIndex.toMap
+
+      // Convert Delta schema to UC columns with partition info and decimal precision/scale
+      val columns: java.util.List[ColumnInfo] = deltaMetadata.schema.fields.zipWithIndex.map {
+        case (field, i) =>
+          val column = new ColumnInfo()
+          column.setName(field.name)
+          field.getComment().foreach(c => column.setComment(c))
+          column.setNullable(field.nullable)
+          column.setTypeText(field.dataType.simpleString)
+          column.setTypeName(convertDataTypeToTypeName(field.dataType))
+          column.setTypeJson(field.dataType.json)
+          column.setPosition(i)
+
+          // Set partition index if this is a partition column
+          partitionColIndex.get(field.name).foreach { partIdx =>
+            column.setPartitionIndex(partIdx)
+          }
+
+          // Set precision and scale for decimal types
+          field.dataType match {
+            case dt: DecimalType =>
+              column.setTypePrecision(dt.precision)
+              column.setTypeScale(dt.scale)
+            case _ => // No precision/scale for other types
+          }
+
+          column
+      }.toList.asJava
+      createTable.setColumns(columns)
+
+      val newTable = tablesApi.createTable(createTable)
+      logInfo(s"Successfully synced metadata for table $fullTableName " +
+        s"(${deltaMetadata.schema.fields.length} columns, " +
+        s"${deltaMetadata.partitionColumns.size} partition columns)")
+      newTable
+    } catch {
+      case e: Exception =>
+        logError(s"Failed to update table metadata in UC for " +
+          s"${t.getCatalogName}.${t.getSchemaName}.${t.getName}: ${e.getMessage}")
+        // Return original table info if update fails
+        t
+    }
   }
 }
